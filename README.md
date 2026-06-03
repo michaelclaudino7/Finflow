@@ -3,11 +3,12 @@
 ![Python](https://img.shields.io/badge/Python-3.14-blue?logo=python)
 ![dbt](https://img.shields.io/badge/dbt-1.7-orange?logo=dbt)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql)
+![dlt](https://img.shields.io/badge/dlt-1.27-8A2BE2?logo=python)
 ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker)
 
 > Pipeline de dados end-to-end para análise do mercado financeiro brasileiro.
-> Ingere cotações de ações, indicadores macroeconômicos (Selic, IPCA, CDI, câmbio) e calcula
-> métricas de risco como Sharpe, Sortino, beta, VaR e drawdown máximo.
+> Ingere cotações de ações e indicadores macroeconômicos (Selic, IPCA, CDI, câmbio) via dlt
+> com schema evolution automático, e calcula métricas de risco como Sharpe, Sortino, beta, VaR e drawdown máximo.
 
 ---
 
@@ -15,13 +16,15 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  INGESTÃO (Python + Pydantic)                                   │
+│  INGESTÃO (dlt + yfinance + requests)                           │
 │  Yahoo Finance │ BCB API                                        │
+│  merge automático │ schema evolution │ lineage de carga         │
 └───────────────────────────┬─────────────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  ARMAZENAMENTO (PostgreSQL — schema raw)                        │
 │  precos_acoes │ indicadores_macro │ ativos                      │
+│  _dlt_loads │ _dlt_version (metadados de carga)                 │
 └───────────────────────────┬─────────────────────────────────────┘
                             ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -65,9 +68,8 @@ cp .env.example .env
 # 4. Suba o banco de dados
 docker compose up -d
 
-# 5. Rode a ingestão completa
-mkdir -p logs
-python3 run_ingestion.py --full
+# 5. Rode a ingestão completa via dlt
+python3 pipeline.py --full
 
 # 6. Rode as transformações dbt
 docker run --rm --network host \
@@ -85,11 +87,21 @@ Ou use o Makefile:
 
 ```bash
 make up           # sobe PostgreSQL + Adminer
-make ingest       # ingestão incremental
+make ingest       # ingestão incremental via dlt
 make ingest-full  # ingestão completa (desde 2019)
 make dbt-run      # transforma com dbt
 make dbt-test     # testa os 57 modelos dbt
 make pipeline     # tudo: ingest + dbt-run + dbt-test
+```
+
+### Opções do pipeline dlt
+
+```bash
+python3 pipeline.py               # incremental (apenas dados novos)
+python3 pipeline.py --full        # carga completa desde DATA_INICIO
+python3 pipeline.py --only precos # apenas preços de ações
+python3 pipeline.py --only macro  # apenas indicadores macro
+python3 pipeline.py --only ativos # apenas metadados dos ativos
 ```
 
 ---
@@ -98,8 +110,7 @@ make pipeline     # tudo: ingest + dbt-run + dbt-test
 
 | Camada | Tecnologia | Finalidade |
 |---|---|---|
-| Ingestão | Python + yfinance + requests | Coleta de dados das APIs |
-| Validação | Pydantic v2 | Validação de schemas na entrada |
+| Ingestão | dlt 1.27 + yfinance + requests | Coleta com schema evolution e lineage |
 | Banco de dados | PostgreSQL 15 | Warehouse local |
 | Containerização | Docker Compose | Ambiente reproduzível |
 | Transformação | dbt-core 1.7 | Modelagem em camadas (staging/marts) |
@@ -148,6 +159,17 @@ make pipeline     # tudo: ingest + dbt-run + dbt-test
 
 ---
 
+## 🔄 Schema Evolution
+
+O projeto utiliza **dlt** para gerenciar automaticamente a evolução do schema das tabelas raw:
+
+- Novas colunas adicionadas nas fontes são detectadas e aplicadas automaticamente no banco
+- Cada carga é rastreada na tabela `_dlt_loads` com timestamp, status e pacote de carga
+- A tabela `_dlt_version` mantém o histórico de versões do schema
+- Estratégia `merge` garante idempotência — rodar o pipeline múltiplas vezes não duplica dados
+
+---
+
 ## 🧪 Qualidade de dados
 
 O projeto utiliza dbt tests executados a cada `make dbt-test`:
@@ -165,11 +187,12 @@ O projeto utiliza dbt tests executados a cada `make dbt-test`:
 
 ```
 finflow/
-├── ingestion/              # Scripts Python de ingestão
-│   ├── yahoo.py            # Yahoo Finance (yfinance)
-│   ├── bcb.py              # BCB API
-│   ├── models.py           # Schemas Pydantic
+├── ingestion/              # Módulo de ingestão
+│   ├── sources/
+│   │   ├── yahoo.py        # Fonte Yahoo Finance (dlt resource)
+│   │   └── bcb.py          # Fonte BCB + IBGE (dlt resource)
 │   └── config.py           # Configurações centrais
+├── pipeline.py             # Entrypoint principal do dlt
 ├── dbt/
 │   ├── models/
 │   │   ├── staging/        # Limpeza e padronização

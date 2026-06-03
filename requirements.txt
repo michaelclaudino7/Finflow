@@ -24,3 +24,4 @@ jupyter
 loguru
 tenacity
 tqdm
+dlt[postgres]
